@@ -1,5 +1,12 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { changedFiles, fail, pass, pullRequestBody, skip } from "./lib/changed-files.mjs";
+import {
+  changedFiles,
+  fail,
+  herstartNaPrTekst,
+  pass,
+  pullRequestBody,
+  skip,
+} from "./lib/changed-files.mjs";
 import { bezitDatabase, databaseModus } from "./lib/stack-config.mjs";
 
 /**
@@ -115,4 +122,5 @@ fail("Deze PR bevat een migratie die data of beveiliging kan vernietigen.", [
   "Weet je het zeker? Zet dan deze regel exact zo in de PR-tekst:",
   "",
   "Bevestigd: destructieve migratie",
+  ...herstartNaPrTekst,
 ]);

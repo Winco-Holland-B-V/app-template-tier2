@@ -49,6 +49,18 @@ export function pullRequestBody() {
   return process.env.PR_BODY ?? "";
 }
 
+/**
+ * Slot van de foutmelding van een guard die een bevestigingsregel uit de PR-tekst leest.
+ * Sinds versie 14 start een aangepaste PR-tekst de Kwaliteitspoort niet meer opnieuw; de
+ * job haalt de tekst live op, dus na een herstart telt een later toegevoegde regel wel.
+ */
+export const herstartNaPrTekst = [
+  "",
+  "Staat de pull request al open? Een aangepaste PR-tekst start de controles niet",
+  "vanzelf opnieuw. Start daarna de rode job opnieuw: `gh run rerun <run-id> --failed`,",
+  "of op GitHub de knop 'Re-run failed jobs'.",
+];
+
 export function skip(reason) {
   console.log(`overgeslagen: ${reason}`);
   process.exit(0);

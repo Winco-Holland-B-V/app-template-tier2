@@ -1,6 +1,6 @@
 # Werkwijze
 
-*Hoort bij de Stage Two-stack, versie 13. Dit bestand komt uit de gedeelde template en
+*Hoort bij de Stage Two-stack, versie 14. Dit bestand komt uit de gedeelde template en
 wordt bijgewerkt met `/stack-cloudflare:updaten`, als pull request; wijzig het niet per project.*
 
 Dit legt uit hóé er in dit project gewerkt wordt en vooral **waarom**. De korte,

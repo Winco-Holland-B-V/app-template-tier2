@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   changedFiles,
   fail,
+  herstartNaPrTekst,
   pass,
   pullRequestBody,
   resolveBase,
@@ -113,4 +114,5 @@ fail("Deze PR wijzigt bestanden die van de gedeelde template zijn.", [
   "     dan krijgt elk project de verbetering, of",
   "  2. zet, als het echt bewust is, deze regel exact zo in de PR-tekst:",
   "     `Bevestigd: templatebestanden gewijzigd`",
+  ...herstartNaPrTekst,
 ]);

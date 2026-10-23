@@ -1,4 +1,11 @@
-import { changedFiles, fail, pass, pullRequestBody, skip } from "./lib/changed-files.mjs";
+import {
+  changedFiles,
+  fail,
+  herstartNaPrTekst,
+  pass,
+  pullRequestBody,
+  skip,
+} from "./lib/changed-files.mjs";
 
 /**
  * Wie code wijzigt, wijzigt ook een test. Niet omdat elke regel getest moet zijn,
@@ -41,4 +48,5 @@ fail("Deze PR wijzigt productiecode maar geen enkele test.", [
   "",
   "Is dit een bugfix? Dan hoort er per definitie een test bij die de bug",
   "reproduceert, anders komt hij terug.",
+  ...herstartNaPrTekst,
 ]);

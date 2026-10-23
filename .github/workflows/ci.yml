@@ -2,11 +2,12 @@ name: Kwaliteitspoort
 
 on:
   pull_request:
-    # `edited` staat er bewust bij. Twee guards lezen een bevestigingsregel uit de
-    # PR-tekst ("Geen tests nodig: ..." en "Bevestigd: destructieve migratie").
-    # Zonder `edited` zou je die regel kunnen toevoegen zonder dat er iets opnieuw
-    # draait, en bleef de check rood tot je een lege commit pushte.
-    types: [opened, synchronize, reopened, edited]
+    # Bewust zonder `edited`: een aangepaste PR-tekst (previewlink plakken, een vinkje
+    # zetten) startte de hele poort opnieuw en brak de lopende run af. Bij Richplant was
+    # dat in oktober 2026 meer dan de helft van de Actions-minuten. Drie guards lezen een
+    # bevestigingsregel uit de PR-tekst; die halen de tekst live op (stap "PR-tekst
+    # ophalen"), dus komt zo'n regel er later bij, dan is "Re-run failed jobs" genoeg.
+    types: [opened, synchronize, reopened]
   # Geen run meer na een merge op `main`: de ruleset eist dat de branch bij is met main,
   # dus de PR-run heeft precies deze code al getest. Een tweede run kostte bij Richplant
   # een kwart van de Actions-minuten (oktober 2026). Uitrollen heeft zijn eigen workflow.
@@ -17,15 +18,13 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   # Snelle controles: geen database nodig, klaar in ongeveer een minuut.
   checks:
     name: Code
     runs-on: ubuntu-latest
-    env:
-      # De guards lezen de PR-tekst voor hun expliciete bevestigingsregels.
-      PR_BODY: ${{ github.event.pull_request.body }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,6 +39,22 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # De guards lezen de PR-tekst voor hun expliciete bevestigingsregels. Live opgehaald,
+      # niet uit het event: een herstart van deze job ziet zo ook een regel die later is
+      # toegevoegd. Lokaal (`pnpm check`) is PR_BODY leeg.
+      - name: PR-tekst ophalen
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.api_url }}/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}
+        run: |
+          einde="PR_BODY_EINDE_$(openssl rand -hex 8)"
+          {
+            echo "PR_BODY<<${einde}"
+            gh api "$PR_URL" --jq '.body // ""'
+            echo "${einde}"
+          } >> "$GITHUB_ENV"
 
       - name: Typecontrole
         run: pnpm typecheck
