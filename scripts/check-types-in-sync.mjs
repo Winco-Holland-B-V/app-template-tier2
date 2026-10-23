@@ -51,4 +51,7 @@ console.error("  Dit is wat er gegenereerd wordt:\n");
 console.error("----- BEGIN GEGENEREERDE TYPES -----");
 console.error(`${HEADER}\n${generated}`);
 console.error("----- EINDE GEGENEREERDE TYPES -----");
-process.exit(1);
+// Niet process.exit(1): dat breekt de uitvoer af zodra die groter is dan de pijp (64 KB), en dan
+// mist in het CI-log het einde van de types (Plantas, oktober 2026). Zo loopt de uitvoer eerst
+// helemaal leeg en eindigt het script daarna met code 1.
+process.exitCode = 1;
