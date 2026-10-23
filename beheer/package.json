@@ -1,0 +1,16 @@
+{
+  "name": "stack-beheer-cloudflare",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Inrichting van een app op Cloudflare en Supabase; draait los van de template (zie README.md)",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3"
+  }
+}

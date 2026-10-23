@@ -1,0 +1,11 @@
+{
+  "$beschrijving": "Wie bij welke app mag. Per groep: domeinen, adressen, idp_groepen, uitsluiten. Per app: de gekozen groepen. Zie beheer/README.md.",
+  "groepen": {
+    "stagetwo": {
+      "adressen": ["info@stagetwo.nl"]
+    }
+  },
+  "apps": {
+    "cf-proef": ["stagetwo"]
+  }
+}

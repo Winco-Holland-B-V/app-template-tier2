@@ -1,0 +1,85 @@
+name: Proef inrichten
+
+# Richt de Cloudflare-proef in (of ruimt hem op), met beheer/inrichten-cloudflare.mjs.
+# Alleen met de hand te starten, alleen vanaf main, en alleen in de GitHub-omgeving
+# proef-beheer: daar staan de brede sleutels (Cloudflare Access, Supabase Management,
+# GitHub-schrijfrechten). Een pull request draait deze workflow nooit en ziet die
+# sleutels dus ook nooit. Zie beheer/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: Naam van de app in beheer/toegang.json
+        type: string
+        default: cf-proef
+      droogloop:
+        description: Alleen kijken en de geplande stappen tonen, niets wijzigen
+        type: boolean
+        default: true
+      opruimen:
+        description: Alles met het voorvoegsel cf-proef- verwijderen
+        type: boolean
+        default: false
+      vangnet:
+        description: Vangnet aanzetten (e-mail-inlog met domeinfilter)
+        type: boolean
+        default: false
+      tweede_doorgang:
+        description: Alleen Access op de Worker zetten (na de eerste uitrol)
+        type: boolean
+        default: false
+
+concurrency:
+  # Nooit twee inrichtingen tegelijk.
+  group: proef-beheer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  inrichten:
+    name: Inrichten
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: proef-beheer
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Inrichten
+        env:
+          CLOUDFLARE_PROEF_TOKEN: ${{ secrets.CLOUDFLARE_PROEF_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_ORG_SLUG: ${{ secrets.SUPABASE_ORG_SLUG }}
+          GH_TOKEN: ${{ secrets.BEHEER_GH_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_TEAM_DOMAIN }}
+          CLOUDFLARE_IDP_IDS: ${{ vars.CLOUDFLARE_IDP_IDS }}
+          CLOUDFLARE_GROEPEN_IDP: ${{ vars.CLOUDFLARE_GROEPEN_IDP }}
+          # Optioneel: met een DSN zet de inrichting Sentry aan in de app.
+          VITE_SENTRY_DSN: ${{ vars.VITE_SENTRY_DSN }}
+          # Invoer via de omgeving, nooit rechtstreeks in het script: zo kan een
+          # waarde geen shell-opdracht worden.
+          APP: ${{ inputs.app }}
+          DROOGLOOP: ${{ inputs.droogloop }}
+          OPRUIMEN: ${{ inputs.opruimen }}
+          VANGNET: ${{ inputs.vangnet }}
+          TWEEDE_DOORGANG: ${{ inputs.tweede_doorgang }}
+        run: |
+          # Het voorvoegsel is verplicht; cf-proef- is dat van de proef en de enige
+          # waarmee het script op deze repo (GITHUB_REPOSITORY) mag terugvallen.
+          args=(--voorvoegsel cf-proef- --app "$APP")
+          if [ "$DROOGLOOP" = "true" ]; then args+=(--droogloop); fi
+          if [ "$OPRUIMEN" = "true" ]; then args+=(--opruimen); fi
+          if [ "$VANGNET" = "true" ]; then args+=(--vangnet); fi
+          if [ "$TWEEDE_DOORGANG" = "true" ]; then args+=(--tweede-doorgang); fi
+          node beheer/inrichten-cloudflare.mjs "${args[@]}"

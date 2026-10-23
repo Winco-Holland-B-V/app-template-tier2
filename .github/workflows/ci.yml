@@ -1,0 +1,174 @@
+name: Kwaliteitspoort
+
+on:
+  pull_request:
+    # `edited` staat er bewust bij. Twee guards lezen een bevestigingsregel uit de
+    # PR-tekst ("Geen tests nodig: ..." en "Bevestigd: destructieve migratie").
+    # Zonder `edited` zou je die regel kunnen toevoegen zonder dat er iets opnieuw
+    # draait, en bleef de check rood tot je een lege commit pushte.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Snelle controles: geen database nodig, klaar in ongeveer een minuut.
+  checks:
+    name: Code
+    runs-on: ubuntu-latest
+    env:
+      # De guards lezen de PR-tekst voor hun expliciete bevestigingsregels.
+      PR_BODY: ${{ github.event.pull_request.body }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Volledige historie: de guards vergelijken met de basisbranch.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecontrole
+        run: pnpm typecheck
+
+      - name: Opmaak en lint
+        run: pnpm lint
+
+      - name: Unittests
+        run: pnpm test
+
+      # De inrichting van de Cloudflare-proef (beheer/) heeft eigen tests met node --test.
+      # Alleen in de template zelf: afgeleide apps krijgen beheer/ niet mee.
+      - name: Beheer-tests (Cloudflare-proef)
+        if: hashFiles('beheer/**/*.test.mjs') != ''
+        run: pnpm beheer:test
+
+      - name: Bouwt het echt
+        run: pnpm build
+
+      - name: Guard - geheimen in repo en bundel
+        run: pnpm guard:secrets
+
+      - name: Guard - verstopte typefouten
+        run: pnpm guard:escapes
+
+      - name: Guard - row level security op elke tabel
+        run: pnpm guard:rls
+
+      - name: Guard - tests bij gewijzigde code
+        run: pnpm guard:tests
+
+      - name: Guard - destructieve migraties
+        run: pnpm guard:migrations
+
+      - name: Guard - bestanden van de gedeelde template
+        run: pnpm guard:template
+
+      # Geen opslag van Cloudflare (D1, R2, KV, Durable Objects) en alleen toegestane
+      # sleutels in wrangler.jsonc. Staat in deze job, en dus in de verplichte check
+      # "Code": een PR die om opslag vraagt kan niet mergen.
+      - name: Guard - geen opslag van Cloudflare
+        run: pnpm guard:cloudflare
+
+  # Alles wat een echte database nodig heeft. Draait tegen een lokale Supabase,
+  # dus zonder sleutels van een cloudomgeving en zonder iets aan te raken wat leeft.
+  #
+  # Er zijn drie standen (`database` in stack.config.json), en ze doen hier elk iets
+  # anders:
+  #
+  #   true       eigen database: lokale Supabase, typecontrole, RLS-tests, browsertest
+  #   "gedeeld"  database van een andere app: alleen de contracttypes worden
+  #              gecontroleerd. Er valt hier niets lokaal te starten en er zijn geen
+  #              eigen tabellen om te beveiligen; dat is de verantwoordelijkheid van
+  #              de repo die de database bezit
+  #   false      geen database: alleen de browsertest
+  #
+  # De job zelf draait altijd: hij staat als verplichte check in de ruleset, en een
+  # job die in zijn geheel wordt overgeslagen laat die check hangen.
+  database:
+    name: Database en end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Doet de databaselaag mee?
+        id: stack
+        run: |
+          modus=$(node -e "import('./scripts/lib/stack-config.mjs').then((m) => console.log(m.databaseModus()))")
+          echo "modus=$modus" >> "$GITHUB_OUTPUT"
+          case "$modus" in
+            eigen)
+              echo "::notice::Eigen database: migraties, typecontrole, RLS-tests en browsertest draaien."
+              ;;
+            gedeeld)
+              echo "::notice::Gedeelde database: alleen de contracttypes worden gecontroleerd. Migraties en RLS horen bij de repo die de database bezit."
+              ;;
+            *)
+              echo "::notice::Deze app heeft geen database. Alleen de end-to-end test draait."
+              ;;
+          esac
+
+      - name: Supabase starten (draait meteen alle migraties)
+        if: steps.stack.outputs.modus == 'eigen'
+        run: pnpm exec supabase start
+
+      - name: Omgevingsvariabelen schrijven
+        if: steps.stack.outputs.modus == 'eigen'
+        run: pnpm env:local
+
+      # Bij een eigen database uit de lokale Supabase; bij een gedeelde database uit
+      # het `api`-schema van de eigenaar. Ontbreekt het token, dan slaat de check
+      # zichzelf over in plaats van vals alarm te slaan.
+      - name: Databasetypes lopen gelijk met het schema
+        if: steps.stack.outputs.modus != 'geen'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: pnpm db:types:check
+
+      - name: RLS-tests
+        if: steps.stack.outputs.modus == 'eigen'
+        run: pnpm test:rls
+
+      - name: Browser installeren
+        if: steps.stack.outputs.modus != 'gedeeld'
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Een app met een gedeelde database heeft geen omgeving om tegen te testen die
+      # in de CI mag draaien: haar gegevens staan in het project van een andere app.
+      # De browsertest draait daar via de Cloudflare-preview van de PR.
+      - name: End-to-end test
+        if: steps.stack.outputs.modus != 'gedeeld'
+        run: pnpm test:e2e
+
+      - name: End-to-end test overgeslagen
+        if: steps.stack.outputs.modus == 'gedeeld'
+        run: echo "::notice::Deze app gebruikt de database van een andere app. Loop de Cloudflare-preview van deze PR na in plaats van te vertrouwen op een browsertest in CI."
+
+      - name: Rapport bewaren als er iets faalde
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-rapport
+          path: playwright-report/
+          retention-days: 7

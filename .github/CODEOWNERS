@@ -1,0 +1,32 @@
+# Wie er een melding krijgt bij een wijziging op deze paden.
+#
+# LET OP: dit blokkeert niets. Er is bewust géén goedkeuring van Stage Two nodig om
+# te mogen mergen, ook niet hier. Reden: als de klant voor elke wijziging op onze
+# goedkeuring moet wachten, kan hij niet zonder ons verder, en dat is precies wat
+# deze werkwijze belooft. Een verplichte review is niet overdraagbaar.
+#
+# Wat er dan wel voor zorgt dat het goed gaat:
+#   - de checks in .github/workflows/ci.yml, die de merge blokkeren als er iets stuk is
+#   - de bevestigingsregels in de PR-tekst voor een destructieve migratie
+#   - de check guard:template, die een PR op de gevoelige paden rood laat staan
+#   - de hook van de Stage Two-plugin, die Claude Code daar al bij de toetsaanslag
+#     tegenhoudt (ook bij dit bestand: het bepaalt wie een melding krijgt)
+#   - /stack-cloudflare:updaten, dat deze bestanden als pull request gelijk zet met de template
+#
+# Bij het opzetten van een project vult bin/nieuw-project.sh hier het juiste account in.
+
+# Alles wat de database onomkeerbaar kan wijzigen.
+/supabase/migrations/       @StageTwoAI
+
+# De kwaliteitspoort zelf, en de aankondiging van de plugin.
+/.github/                   @StageTwoAI
+/scripts/                   @StageTwoAI
+/.claude/                   @StageTwoAI
+
+# Inloggen, rechten en betalingen.
+/src/features/auth/         @StageTwoAI
+
+# Wie bij welke app mag. Tijdens de proef is Stage Two zelf de klant; bij een klant
+# staat hier zijn IT, en maakt een ruleset de review van CODEOWNERS verplicht voor dit
+# pad (zie beheer/README.md).
+/beheer/toegang.json        @StageTwoAI

@@ -1,0 +1,134 @@
+name: Database bijwerken
+
+# Migraties draaien ALLEEN bij een merge naar main, nooit op een pull request.
+# Een pull request mag de database van niemand aanraken.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  # Nooit twee migratieruns tegelijk op dezelfde database.
+  group: database-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    name: Migraties toepassen
+    runs-on: ubuntu-latest
+    # Project-ref en wachtwoord staan in omgeving production, die alleen main toelaat.
+    # Een access token van de Management API van Supabase is hier niet nodig: dat geeft
+    # rechten op alle projecten van de organisatie en blijft in de beheer-repo.
+    # Migreren gaat rechtstreeks met `--db-url`, zonder het project eerst te koppelen.
+    environment: production
+    steps:
+      # Uitchecken gebeurt altijd, want de eerste vraag hieronder staat in de repo.
+      - uses: actions/checkout@v7
+
+      # Alleen de repo die de database BEZIT mag migraties toepassen. Een app die de
+      # database van een ander gebruikt ("gedeeld") komt hier nooit voorbij: twee
+      # repo's die naar hetzelfde project pushen lopen vast op de migratiehistorie.
+      - name: Bezit deze app haar eigen database?
+        id: stack
+        run: |
+          aan=$(node -e "import('./scripts/lib/stack-config.mjs').then((m) => console.log(m.bezitDatabase()))")
+          modus=$(node -e "import('./scripts/lib/stack-config.mjs').then((m) => console.log(m.databaseModus()))")
+          testref=$(node -e "import('./scripts/lib/stack-config.mjs').then((m) => console.log(m.testDatabase()?.project_ref ?? ''))")
+          echo "database=$aan" >> "$GITHUB_OUTPUT"
+          echo "modus=$modus" >> "$GITHUB_OUTPUT"
+          echo "testref=$testref" >> "$GITHUB_OUTPUT"
+
+      - name: Zijn de secrets al gezet?
+        id: check
+        env:
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          WACHTWOORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          if [ "${{ steps.stack.outputs.modus }}" = "gedeeld" ]; then
+            echo "::notice::Deze app gebruikt de database van een andere app en bezit het schema niet. Migraties horen thuis in de repo van de eigenaar."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.stack.outputs.database }}" != "true" ]; then
+            echo "::notice::Deze app draait zonder database (database: false in stack.config.json). Migraties worden overgeslagen."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$WACHTWOORD" ] || [ -z "$PROJECT_REF" ]; then
+            echo "::notice::SUPABASE_DB_PASSWORD of SUPABASE_PROJECT_REF ontbreekt in omgeving production. Migraties worden overgeslagen."
+            echo "Dit is normaal in een project dat nog opgezet wordt; de inrichting zet beide secrets."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.check.outputs.skip != 'true'
+        uses: pnpm/action-setup@v6
+
+      - if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - if: steps.check.outputs.skip != 'true'
+        run: pnpm install --frozen-lockfile
+
+      # Eerst de testdatabase (canary), als die er is. Dat is hetzelfde project als
+      # waar de Cloudflare-preview naar wijst. Falen de migraties daar, dan stopt de job
+      # hier en blijft productie onaangeroerd. Bijkomend voordeel: de preview van de
+      # volgende PR draait op het schema dat productie ook heeft.
+      - name: Is er een testdatabase om eerst op te proberen?
+        if: steps.check.outputs.skip != 'true'
+        id: canary
+        env:
+          TEST_DB_PASSWORD: ${{ secrets.SUPABASE_TEST_DB_PASSWORD }}
+          TESTREF: ${{ steps.stack.outputs.testref }}
+        run: |
+          if [ -z "$TESTREF" ]; then
+            echo "::notice::Geen testdatabase ingesteld (blok testdatabase in stack.config.json). Migraties gaan rechtstreeks naar productie."
+            echo "doen=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$TEST_DB_PASSWORD" ]; then
+            echo "::warning::Er is een testdatabase ingesteld, maar het secret SUPABASE_TEST_DB_PASSWORD ontbreekt. De canary wordt overgeslagen; zet het secret (BOOTSTRAP.md stap 5)."
+            echo "doen=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "doen=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Het adres van de database bouwt scripts/db-url.mjs, in de stap zelf, en het wordt
+      # nergens bewaard. Het gecodeerde wachtwoord verschilt van het secret; de eerste
+      # aanroep (--mask) schermt het af in het log voordat het adres bestaat.
+      # Standaard de directe verbinding db.<ref>.supabase.co. Die is alleen via IPv6
+      # bereikbaar, en de runners van GitHub hebben geen IPv6. Zet daarom in omgeving
+      # production de variabele SUPABASE_POOLER_HOST (zie Supabase > Connect > Session
+      # pooler, bijvoorbeeld aws-0-eu-central-1.pooler.supabase.com); dan gaat het via
+      # de session pooler op IPv4, met gebruiker postgres.<ref>.
+      - name: Canary - migraties toepassen op de testdatabase
+        if: steps.check.outputs.skip != 'true' && steps.canary.outputs.doen == 'true'
+        env:
+          PROJECT_REF: ${{ steps.stack.outputs.testref }}
+          WACHTWOORD: ${{ secrets.SUPABASE_TEST_DB_PASSWORD }}
+          POOLER: ${{ vars.SUPABASE_POOLER_HOST }}
+        run: |
+          # Eerst het masker voor het gecodeerde wachtwoord, dan pas het adres.
+          node scripts/db-url.mjs --mask
+          DB_URL=$(node scripts/db-url.mjs)
+          pnpm exec supabase db push --db-url "$DB_URL" --include-all
+
+      # De Supabase CLI zit als devDependency in package.json, dus hier draait exact
+      # dezelfde versie als op de machine van de bouwer. Dat voorkomt verrassingen.
+      - name: Migraties toepassen
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          WACHTWOORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          POOLER: ${{ vars.SUPABASE_POOLER_HOST }}
+        run: |
+          # Eerst het masker voor het gecodeerde wachtwoord, dan pas het adres.
+          node scripts/db-url.mjs --mask
+          DB_URL=$(node scripts/db-url.mjs)
+          echo "Wat er zou draaien:"
+          pnpm exec supabase migration list --db-url "$DB_URL"
+          pnpm exec supabase db push --db-url "$DB_URL" --include-all
+
+# Let op de volgorde in de tijd: de workflow `uitrollen` begint aan zijn eigen deploy zodra er naar
+# main gemerged wordt, dus heel even kan nieuwe code op het oude schema draaien.
+# Daarom is de regel: migraties zijn aanvullend. Voeg een kolom toe in de ene PR en
+# ga hem pas gebruiken in de volgende, en gooi een kolom pas weg als niets hem meer
+# aanroept. Dan is die paar seconden nooit een probleem.

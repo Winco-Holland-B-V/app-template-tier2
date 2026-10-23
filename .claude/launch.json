@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app",
+      "program": "scripts/preview.mjs",
+      "port": 5173,
+      "autoPort": true
+    }
+  ]
+}
