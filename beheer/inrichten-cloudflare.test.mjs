@@ -15,7 +15,7 @@ import {
   valideerVoorvoegsel,
   wachtOpDiscovery,
 } from "./lib/cloudflare.mjs";
-import { supabaseBeheer, uriAllowList } from "./lib/supabase.mjs";
+import { organisaties, supabaseBeheer, uriAllowList } from "./lib/supabase.mjs";
 import { magAanmelden } from "./lib/toegang.mjs";
 import { vraag } from "./lib/vraag.mjs";
 import { nepWolk } from "./nep-wolk.mjs";
@@ -28,7 +28,7 @@ const ARG = {
   app: "cf-proef",
   hostname: "cf-proef.stagetwo.nl",
   worker: "cf-proef",
-  repo: "Stage-Two-AI/stack-template-cloudflare",
+  repo: "Stage-Two-AI/app-template-tier2",
   voorvoegsel: "cf-proef-",
   droogloop: false,
 };
@@ -160,12 +160,12 @@ test("argumenten: buiten de proef zijn --repo en --wrangler verplicht", () => {
 
 test("argumenten: de proef valt terug op GITHUB_REPOSITORY en wrangler.jsonc", () => {
   const a = leesArgumenten([...PROEF, "--app", "cf-proef"], {
-    GITHUB_REPOSITORY: "Stage-Two-AI/stack-template-cloudflare",
+    GITHUB_REPOSITORY: "Stage-Two-AI/app-template-tier2",
   });
-  assert.equal(a.repo, "Stage-Two-AI/stack-template-cloudflare");
+  assert.equal(a.repo, "Stage-Two-AI/app-template-tier2");
   assert.equal(a.wrangler, null, "het script leest dan wrangler.jsonc in de werkmap");
   const b = leesArgumenten([...PROEF, "--app", "cf-proef", "--repo", "Stage-Two-AI/ander"], {
-    GITHUB_REPOSITORY: "Stage-Two-AI/stack-template-cloudflare",
+    GITHUB_REPOSITORY: "Stage-Two-AI/app-template-tier2",
   });
   assert.equal(b.repo, "Stage-Two-AI/ander", "--repo gaat voor");
 });
@@ -374,7 +374,7 @@ test("voorvoegsel rp- en --repo: alles krijgt rp- en alles gaat naar die repo", 
   assert.ok(gh.length > 0);
   for (const a of gh) {
     assert.equal(a.args[a.args.indexOf("--repo") + 1], "Richplant-BV/richplant-start");
-    assert.equal(a.args.includes("Stage-Two-AI/stack-template-cloudflare"), false);
+    assert.equal(a.args.includes("Stage-Two-AI/app-template-tier2"), false);
   }
 });
 
@@ -1453,4 +1453,67 @@ test("testdatabase: toegang bijwerken trekt ook in de testdatabase in", async ()
     w.aanroepen.some((a) => a.methode === "listUsers" && a.url.includes(testRef)),
     "gebruikers van de testdatabase nagelopen",
   );
+});
+
+// ---------------------------------------------------------------- meer dan één Supabase-organisatie
+
+function nepFetchOrgs(projecten, verzoeken = []) {
+  return async (url, init = {}) => {
+    verzoeken.push({
+      url,
+      methode: init.method ?? "GET",
+      body: init.body ? JSON.parse(init.body) : null,
+    });
+    const data = init.method === "POST" ? { ref: "nieuw" } : projecten;
+    return new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
+const PROJECTEN_ORGS = [
+  { name: "wc-overzicht", organization_slug: "winco", status: "ACTIVE_HEALTHY" },
+  { name: "wc-plantas", organization_slug: "plantas", status: "ACTIVE_HEALTHY" },
+  { name: "vreemd", organization_slug: "ander", status: "ACTIVE_HEALTHY" },
+  { name: "wc-weg", organization_slug: "winco", status: "REMOVED" },
+];
+
+test("organisaties: één of meer, met komma's en spaties", () => {
+  assert.deepEqual(organisaties("winco"), ["winco"]);
+  assert.deepEqual(organisaties(" winco , plantas "), ["winco", "plantas"]);
+  assert.deepEqual(organisaties(""), []);
+  assert.deepEqual(organisaties(undefined), []);
+});
+
+test("projecten: alleen uit de genoemde organisaties", async () => {
+  const een = supabaseBeheer({
+    token: "t",
+    orgSlug: "winco",
+    fetchFn: nepFetchOrgs(PROJECTEN_ORGS),
+  });
+  assert.deepEqual(
+    (await een.projecten()).map((p) => p.name),
+    ["wc-overzicht"],
+  );
+  const twee = supabaseBeheer({
+    token: "t",
+    orgSlug: "winco,plantas",
+    fetchFn: nepFetchOrgs(PROJECTEN_ORGS),
+  });
+  assert.deepEqual(
+    (await twee.projecten()).map((p) => p.name),
+    ["wc-overzicht", "wc-plantas"],
+  );
+});
+
+test("maakProject: een nieuw project komt in de eerste organisatie", async () => {
+  const verzoeken = [];
+  const b = supabaseBeheer({
+    token: "t",
+    orgSlug: "winco,plantas",
+    fetchFn: nepFetchOrgs(PROJECTEN_ORGS, verzoeken),
+  });
+  await b.maakProject("wc-nieuw", "geheim");
+  assert.equal(verzoeken.at(-1).body.organization_slug, "winco");
 });
