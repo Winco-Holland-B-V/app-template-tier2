@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { generate, HEADER, kanGenereren, stripHeader, TARGET } from "./lib/db-types.mjs";
+import { generate, HEADER, kanGenereren, TARGET, zelfdeTypes } from "./lib/db-types.mjs";
 import { databaseModus } from "./lib/stack-config.mjs";
 
 /**
@@ -40,7 +40,7 @@ try {
 
 const committed = readFileSync(TARGET, "utf8");
 
-if (stripHeader(generated) === stripHeader(committed)) {
+if (zelfdeTypes(generated, committed)) {
   console.log(`✓ ${TARGET} loopt gelijk met het databaseschema`);
   process.exit(0);
 }

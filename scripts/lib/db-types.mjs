@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { databaseModus, gedeeldeDatabase } from "./stack-config.mjs";
 
 export const TARGET = "src/lib/database.types.ts";
@@ -33,12 +34,46 @@ function argumenten() {
   return [...basis, "--local"];
 }
 
-/** Genereert de databasetypes: lokaal bij een eigen database, anders uit het contract. */
+/**
+ * Maakt types op met Biome, dezelfde formatter als de rest van de code. Sinds Supabase CLI
+ * 2.119 komen ze onopgemaakt uit de generator (alle kolommen van een tabel op één regel), en
+ * dat leest slecht, ook in een PR-diff. De naam voor stdin ligt bewust buiten src/lib: biome.json
+ * slaat src/lib/database.types.ts zelf over.
+ */
+export function formatteer(tekst) {
+  // Biome rechtstreeks via Node, niet via `pnpm exec`: pnpm kan zelf een regel op stdout zetten
+  // ("Already up to date"), en via Node werkt het ook op Windows. Fouten van Biome blijven binnen.
+  const biome = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");
+  return execFileSync(process.execPath, [biome, "format", "--stdin-file-path=database.types.ts"], {
+    input: tekst,
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+/** Genereert de databasetypes, opgemaakt: lokaal bij een eigen database, anders uit het contract. */
 export function generate() {
-  return execFileSync("pnpm", argumenten(), {
+  const ruw = execFileSync("pnpm", argumenten(), {
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
   });
+  return formatteer(ruw);
+}
+
+/**
+ * Lopen de vastgelegde types gelijk met de gegenereerde? Beide worden eerst opgemaakt, zodat
+ * alleen de inhoud telt: een bestand dat nog onopgemaakt is vastgelegd (van vóór versie 16)
+ * blijft geldig tot de volgende `pnpm db:types`.
+ */
+export function zelfdeTypes(gegenereerd, vastgelegd) {
+  const inhoud = (tekst) => stripHeader(formatteer(stripHeader(tekst)));
+  try {
+    return inhoud(gegenereerd) === inhoud(vastgelegd);
+  } catch {
+    // Het vastgelegde bestand is geen geldige TypeScript meer: dan loopt het zeker niet gelijk.
+    return false;
+  }
 }
 
 /** Haalt de kop met commentaarregels weg, zodat we alleen de inhoud vergelijken. */
