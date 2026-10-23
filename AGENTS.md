@@ -142,10 +142,12 @@ docs/solutions/        gedocumenteerde oplossingen van eerdere problemen (bugs, 
   opslag van Cloudflare zelf (D1, KV, R2, Durable Objects): Cloudflare serveert alleen
   de app en regelt de toegang. `guard:cloudflare` laat alleen de sleutels in
   `wrangler.jsonc` door die op de lijst staan en blokkeert de rest.
-- **De app heeft één adres, en dat staat achter Access.** Normaal is dat het eigen domein
-  (`routes` met `custom_domain: true`, `workers_dev: false`). Alleen zolang de klant nog
-  geen domein heeft, mag de tijdelijke stand: geen `routes` en `workers_dev: true`. Zet
-  die stand niet op eigen houtje aan of uit; `docs/WERKWIJZE.md` zegt wanneer hij mag.
+- **Elk adres van de app staat achter Access.** Normaal is dat het eigen domein
+  (`routes` met `custom_domain: true`). Alleen zolang de klant nog geen domein heeft,
+  mag de tijdelijke stand: geen `routes`. `workers_dev` staat in beide standen op `true`,
+  achter de Access op de Worker zelf; zonder dat adres tonen de previews alleen "There
+  is nothing here yet". Zet geen stand op eigen houtje aan of uit; `docs/WERKWIJZE.md`
+  zegt wanneer hij mag.
 - **Wie code wijzigt, wijzigt ook een test.** Bugfix? Eerst een test die de bug
   reproduceert, dan de reparatie.
 - **Eén PR = één onderwerp.** Beschrijf wat je gewijzigd hebt en waarom.
@@ -155,8 +157,6 @@ docs/solutions/        gedocumenteerde oplossingen van eerdere problemen (bugs, 
   pas lopen met de werkelijkheid.
 - **Migraties zijn aanvullend.** Voeg een kolom toe in de ene PR en gebruik hem in de
   volgende; gooi een kolom pas weg als niets hem meer aanroept.
-- After a solved, verified problem, offer once to invoke the `ce-compound` skill at the completion checkpoint only when the work produced durable project reasoning that is not readily recoverable from the final code, tests, types, comments, or existing documentation, and losing it would plausibly cause recurrence, material risk, or substantial rediscovery. Apply this counterfactual: if the learning document disappeared, would a future engineer reading the final implementation still be likely to repeat the mistake or redo substantial investigation? If not, do not offer. Completion, effort, and diff size alone are not enough. Offer at the checkpoint so a qualifying learning can ship in the PR that produced it, and only where the repository treats captured learnings as tracked, committed knowledge.
-- Write every report, summary, or handoff to the user through the `ce-noslop` skill. This applies when you are the top-level agent writing to the user, not when you are a subagent reporting to its caller. Do not apply it to code, config, verbatim quotes, or text the user asked to post as written.
 
 ## Werkwijzen
 

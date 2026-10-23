@@ -4,8 +4,7 @@
       "source": {
         "source": "github",
         "repo": "Winco-Holland-B-V/stagetwo-plugin-tier2"
-      },
-      "autoUpdate": true
+      }
     }
   },
   "enabledPlugins": {
