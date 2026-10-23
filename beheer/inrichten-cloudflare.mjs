@@ -7,7 +7,7 @@
  *
  *   node beheer/inrichten-cloudflare.mjs --voorvoegsel <vv-> --app <naam>
  *        [--repo <org/naam>] [--wrangler <pad>] [--hostname <host>]
- *        [--droogloop | --opruimen | --vangnet | --tweede-doorgang | --toegang]
+ *        [--testdatabase] [--droogloop | --opruimen | --vangnet | --tweede-doorgang | --toegang]
  *
  * Het voorvoegsel is verplicht (vlag of BEHEER_VOORVOEGSEL): `cf-proef-` voor de proef,
  * `rp-` voor Richplant. Buiten de proef zijn ook `--repo` (de app-repo die de
@@ -22,6 +22,9 @@
  *   3.4 auth-config: site_url, uri_allow_list, e-mail-inlog uit (disable_signup blijft)
  *   3.5 Access-app op de hostname (de deur), dezelfde policies
  *   4   Access op de Worker zelf (vóór 3.6, zodat hij er staat vóór de eerste uitrol)
+ *   T   met --testdatabase: een tweede Supabase-project `<vv><app>-test` met een eigen
+ *       SaaS-app `<vv><app>-test-inlog`, provider en auth-config; de previews wijzen
+ *       daarheen en het wachtwoord komt als SUPABASE_TEST_DB_PASSWORD in production
  *   3.6 GitHub-variabelen en -secrets per omgeving
  *
  * In de tijdelijke stand van wrangler.jsonc (`workers_dev: true`, geen routes; zie
@@ -51,14 +54,14 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { cloudflareConfig } from "../scripts/lib/cloudflare-config.mjs";
 import {
+  afwijkingen,
   appNamen,
   cloudflareClient,
   deurApp,
   inlogApp,
   issuerVoor,
-  metPolicies,
+  metGewenst,
   PROEF_VOORVOEGSEL,
-  policyIdsVanApp,
   valideerVoorvoegsel,
   wachtOpDiscovery,
   workerApp,
@@ -120,7 +123,7 @@ const GH_PREVIEW_VARIABELEN = [
   "PREVIEW_VITE_INLOGDIENST",
   "PREVIEW_VITE_SENTRY_DSN",
 ];
-const GH_SECRETS = ["SUPABASE_PROJECT_REF", "SUPABASE_DB_PASSWORD"];
+const GH_SECRETS = ["SUPABASE_PROJECT_REF", "SUPABASE_DB_PASSWORD", "SUPABASE_TEST_DB_PASSWORD"];
 const REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 
 // ---------------------------------------------------------------- argumenten
@@ -141,8 +144,10 @@ export function leesArgumenten(argv, env = {}) {
     vangnet: false,
     tweedeDoorgang: false,
     toegang: false,
+    testdatabase: false,
   };
   const vlaggen = {
+    "--testdatabase": "testdatabase",
     "--droogloop": "droogloop",
     "--opruimen": "opruimen",
     "--vangnet": "vangnet",
@@ -260,7 +265,7 @@ async function verken(arg, d, { schrijven }) {
   const hostname = tijdelijk ? `${arg.worker}.${subdomein}.workers.dev` : arg.hostname;
 
   const fouten = [...kaleNaamConflicten(t, policies, vv)];
-  for (const naam of [namen.deur, namen.inlog, namen.worker]) {
+  for (const naam of [namen.deur, namen.inlog, namen.testInlog, namen.worker]) {
     const kaal = naam.slice(vv.length);
     if (apps.some((a) => a.name === kaal)) {
       fouten.push(`Access-app "${kaal}" bestaat al zonder voorvoegsel ${vv}`);
@@ -273,9 +278,17 @@ async function verken(arg, d, { schrijven }) {
   );
   if (opHost)
     fouten.push(`Access-app "${opHost.name}" (zonder voorvoegsel) bewaakt ${hostname} al`);
-  const kaalProject = namen.project.slice(vv.length);
-  if (projecten.some((p) => p.name === kaalProject)) {
-    fouten.push(`Supabase-project "${kaalProject}" bestaat al zonder voorvoegsel ${vv}`);
+  for (const naam of [namen.project, namen.test]) {
+    const kaal = naam.slice(vv.length);
+    if (projecten.some((p) => p.name === kaal)) {
+      fouten.push(`Supabase-project "${kaal}" bestaat al zonder voorvoegsel ${vv}`);
+    }
+  }
+  // De testdatabase van app x heet zoals het project van een app x-test zou heten.
+  if (arg.testdatabase && t.apps[`${arg.app}-test`]) {
+    fouten.push(
+      `er staat ook een app "${arg.app}-test" in toegang.json; die naam is van de testdatabase van ${arg.app}`,
+    );
   }
   if (fouten.length) throw new Error(`gestopt zonder wijzigingen: ${fouten.join("; ")}`);
 
@@ -293,6 +306,8 @@ async function verken(arg, d, { schrijven }) {
     project: projecten.find((p) => p.name === namen.project) ?? null,
     deur: apps.find((a) => a.name === namen.deur) ?? null,
     inlog: apps.find((a) => a.name === namen.inlog) ?? null,
+    testProject: projecten.find((p) => p.name === namen.test) ?? null,
+    testInlog: apps.find((a) => a.name === namen.testInlog) ?? null,
     workerAccess: apps.find((a) => a.name === namen.worker) ?? null,
   };
 }
@@ -422,11 +437,10 @@ async function stapWorker(arg, d, v, policyIds) {
     };
   }
   const voor = placeholder ? "placeholder neergezet, Access " : "";
-  if (JSON.stringify(policyIdsVanApp(v.workerAccess)) === JSON.stringify(policyIds)) {
-    return { stap, actie: `${voor}ongewijzigd`, id: v.workerAccess.id };
-  }
-  await d.cf.werkAppBij(v.workerAccess.id, metPolicies(v.workerAccess, policyIds));
-  return { stap, actie: `${voor}policies bijgewerkt`, id: v.workerAccess.id };
+  const anders = afwijkingen(v.workerAccess, policyIds, v.idps);
+  if (!anders.length) return { stap, actie: `${voor}ongewijzigd`, id: v.workerAccess.id };
+  await d.cf.werkAppBij(v.workerAccess.id, metGewenst(v.workerAccess, policyIds, v.idps));
+  return { stap, actie: `${voor}${anders.join(" en ")} bijgewerkt`, id: v.workerAccess.id };
 }
 
 // ---------------------------------------------------------------- de inrichting
@@ -462,6 +476,17 @@ function geplandeStappen(arg, v, workerBestaat) {
       stap: "3.4 auth-config",
       actie: `gepland: site_url https://${v.hostname}, redirects ${uriAllowList({ hostname: v.hostname, worker: arg.worker, subdomein: v.subdomein }).join(" ")}, e-mail-inlog uit`,
     },
+    ...(arg.testdatabase
+      ? [
+          {
+            stap: "T testdatabase",
+            actie: bestaat(
+              v.testProject,
+              `${v.namen.test} in ${REGIO}, SaaS-app ${v.namen.testInlog}; de previews wijzen daarheen`,
+            ),
+          },
+        ]
+      : []),
     {
       stap: "3.5 Access-app op de hostname",
       actie: v.tijdelijk ? GEEN_DEUR : bestaat(v.deur, `${v.namen.deur} op ${v.hostname}`),
@@ -474,8 +499,118 @@ function geplandeStappen(arg, v, workerBestaat) {
   ];
 }
 
+/** 3.2 voor één Supabase-project: de SaaS-app (OIDC) aanmaken, of de policies gelijkzetten. */
+async function stapInlogApp(d, { bestaand, naam, ref, policyIds, idps, maskeer }) {
+  if (!bestaand) {
+    const inlog = await d.cf.maakApp(
+      inlogApp({ naam, callback: callbackAdres(ref), policyIds, idps }),
+    );
+    const clientSecret = inlog?.saas_app?.client_secret ?? null;
+    maskeer(clientSecret);
+    return { inlog, clientSecret, actie: `aangemaakt (${inlog.id})` };
+  }
+  const anders = afwijkingen(bestaand, policyIds, idps);
+  if (anders.length) {
+    await d.cf.werkAppBij(bestaand.id, metGewenst(bestaand, policyIds, idps));
+    return {
+      inlog: bestaand,
+      clientSecret: null,
+      actie: `hergebruikt, ${anders.join(" en ")} bijgewerkt (${bestaand.id})`,
+    };
+  }
+  return { inlog: bestaand, clientSecret: null, actie: `hergebruikt (${bestaand.id})` };
+}
+
 /**
- * De hele inrichting. `d` (diensten) is injecteerbaar voor de tests:
+ * 3.3 en 3.4 voor één Supabase-project: de custom provider met de issuer van zijn
+ * SaaS-app, daarna de auth-config.
+ */
+async function koppelInlog(d, v, { ref, serviceRole, saas, naam, gewenstAuth }) {
+  // NAGAAN (U7): client_id staat in `saas_app.client_id` van het antwoord.
+  const clientId = saas.inlog?.saas_app?.client_id;
+  if (!clientId) throw new Error(`de SaaS-app ${naam} heeft geen client_id in saas_app`);
+  const issuer = issuerVoor(v.team, clientId);
+  // Een net aangemaakte SaaS-app is pas na een paar minuten bereikbaar; zonder te
+  // wachten weigert Supabase de provider, en dan is het geheim weg.
+  await (d.wachtOpDiscovery ?? wachtOpDiscovery)(issuer);
+  const admin = (d.maakAdmin ?? standaardAdmin)(supabaseUrl(ref), serviceRole);
+  const provider = await zetProvider(admin.customProviders, {
+    issuer,
+    clientId,
+    clientSecret: saas.clientSecret,
+  });
+  const anders = verschil(await d.supabase.authConfig(ref), gewenstAuth);
+  if (Object.keys(anders).length) await d.supabase.werkAuthBij(ref, anders);
+  const auth = Object.keys(anders).length
+    ? `bijgewerkt: ${Object.keys(anders).join(", ")}`
+    : "ongewijzigd";
+  return { issuer, provider, auth };
+}
+
+/**
+ * Stap T: de testdatabase. Een eigen Supabase-project met een eigen SaaS-app, zodat
+ * een preview nooit bij productie kan; dezelfde policies, dus dezelfde mensen. De
+ * migraties zet deploy-db.yml erop zodra `testdatabase` in stack.config.json staat
+ * (App inrichten opent daarvoor een pull request op de app-repo).
+ */
+async function stapTestdatabase(arg, d, v, { policyIds, gewenstAuth, maskeer, stap }) {
+  let project = v.testProject;
+  if (project) stap("T testdatabase: project", `hergebruikt (${project.ref})`);
+  else {
+    const wachtwoord = (d.wachtwoord ?? nieuwWachtwoord)();
+    maskeer(wachtwoord);
+    project = await d.supabase.maakProject(v.namen.test, wachtwoord);
+    stap("T testdatabase: project", `aangemaakt (${project.ref}, ${REGIO})`);
+    // Net als bij productie: meteen bewaren, het wachtwoord is alleen nu bekend.
+    await zetGithub(d, arg.repo, {
+      secrets: { SUPABASE_TEST_DB_PASSWORD: { waarde: wachtwoord, altijd: true } },
+    });
+  }
+  await d.supabase.wachtTotGezond(project.ref);
+  const sleutels = await d.supabase.sleutels(project.ref);
+  maskeer(sleutels.serviceRole);
+  const saas = await stapInlogApp(d, {
+    bestaand: v.testInlog,
+    naam: v.namen.testInlog,
+    ref: project.ref,
+    policyIds,
+    idps: v.idps,
+    maskeer,
+  });
+  stap("T testdatabase: SaaS-app (OIDC)", saas.actie);
+  const k = await koppelInlog(d, v, {
+    ref: project.ref,
+    serviceRole: sleutels.serviceRole,
+    saas,
+    naam: v.namen.testInlog,
+    gewenstAuth,
+  });
+  stap("T testdatabase: provider en auth-config", `${k.provider}; auth-config ${k.auth}`);
+  if (
+    v.testProject &&
+    !(await leesGhSecretNamen(d, SECRET_OMGEVING, arg.repo)).includes("SUPABASE_TEST_DB_PASSWORD")
+  ) {
+    // Het oude wachtwoord is niet op te vragen. Voor de testdatabase mag een nieuw: er
+    // staan alleen testgegevens in, en zonder dit secret slaat deploy-db.yml de canary
+    // over en gaan migraties meteen naar productie. Productie krijgt dit nooit.
+    const wachtwoord = (d.wachtwoord ?? nieuwWachtwoord)();
+    maskeer(wachtwoord);
+    await d.supabase.zetDatabaseWachtwoord(project.ref, wachtwoord);
+    await zetGithub(d, arg.repo, {
+      secrets: { SUPABASE_TEST_DB_PASSWORD: { waarde: wachtwoord, altijd: true } },
+    });
+    stap(
+      "T testdatabase: wachtwoord",
+      "ontbrak in de app-repo: nieuw gezet in Supabase en als secret",
+    );
+  }
+  // Voor stack.config.json (in git) de publishable key: de anon-JWT valt over guard:secrets.
+  return { ref: project.ref, anon: sleutels.anon, inGit: sleutels.publishable ?? sleutels.anon };
+}
+
+/**
+ * De hele inrichting.
+ `d` (diensten) is injecteerbaar voor de tests:
  *   cf, supabase, maakAdmin(url, serviceRole), gh(args, {invoer}), toegang, accountId,
  *   idps?, groepenIdp?, wachtwoord?, maskeer(waarde)
  */
@@ -528,49 +663,40 @@ export async function richtIn(arg, d) {
   });
   stap("3.2 Access-policies", sync.acties.length ? sync.acties.join("; ") : "ongewijzigd");
   const policyIds = policyIdsVoorApp(v.t, arg.app, sync.ids);
-  let inlog = v.inlog;
-  let clientSecret = null;
-  if (!inlog) {
-    inlog = await cf.maakApp(
-      inlogApp({
-        naam: v.namen.inlog,
-        callback: callbackAdres(project.ref),
-        policyIds,
-        idps: v.idps,
-      }),
-    );
-    clientSecret = inlog?.saas_app?.client_secret ?? null;
-    maskeer(clientSecret);
-    stap("3.2 Access SaaS-app (OIDC)", `aangemaakt (${inlog.id})`);
-  } else if (JSON.stringify(policyIdsVanApp(inlog)) !== JSON.stringify(policyIds)) {
-    await cf.werkAppBij(inlog.id, metPolicies(inlog, policyIds));
-    stap("3.2 Access SaaS-app (OIDC)", `hergebruikt, policies bijgewerkt (${inlog.id})`);
-  } else stap("3.2 Access SaaS-app (OIDC)", `hergebruikt (${inlog.id})`);
-  // NAGAAN (U7): client_id staat in `saas_app.client_id` van het antwoord.
-  const clientId = inlog?.saas_app?.client_id;
-  if (!clientId) throw new Error(`de SaaS-app ${v.namen.inlog} heeft geen client_id in saas_app`);
-  const issuer = issuerVoor(v.team, clientId);
-  resultaat.issuer = issuer;
+  const saas = await stapInlogApp(d, {
+    bestaand: v.inlog,
+    naam: v.namen.inlog,
+    ref: project.ref,
+    policyIds,
+    idps: v.idps,
+    maskeer,
+  });
+  const inlog = saas.inlog;
+  stap("3.2 Access SaaS-app (OIDC)", saas.actie);
 
-  // 3.3 custom provider. Een net aangemaakte SaaS-app is pas na een paar minuten
-  // bereikbaar; zonder te wachten weigert Supabase de provider, en dan is het geheim weg.
-  await (d.wachtOpDiscovery ?? wachtOpDiscovery)(issuer);
-  const admin = (d.maakAdmin ?? standaardAdmin)(supabaseUrl(project.ref), sleutels.serviceRole);
-  const provider = await zetProvider(admin.customProviders, { issuer, clientId, clientSecret });
-  stap("3.3 custom provider custom:cloudflare", provider);
-
-  // 3.4 auth-config
+  // 3.3 custom provider en 3.4 auth-config
   const gewenstAuth = authInstellingen({
     hostname: v.hostname,
     worker: arg.worker,
     subdomein: v.subdomein,
   });
-  const anders = verschil(await supabase.authConfig(project.ref), gewenstAuth);
-  if (Object.keys(anders).length) {
-    await supabase.werkAuthBij(project.ref, anders);
-    stap("3.4 auth-config", `bijgewerkt: ${Object.keys(anders).join(", ")}`);
-  } else stap("3.4 auth-config", "ongewijzigd");
+  const koppeling = await koppelInlog(d, v, {
+    ref: project.ref,
+    serviceRole: sleutels.serviceRole,
+    saas,
+    naam: v.namen.inlog,
+    gewenstAuth,
+  });
+  resultaat.issuer = koppeling.issuer;
+  stap("3.3 custom provider custom:cloudflare", koppeling.provider);
+  stap("3.4 auth-config", koppeling.auth);
   resultaat.uri_allow_list = gewenstAuth.uri_allow_list.split(",");
+
+  // T de testdatabase, waar de previews naartoe gaan
+  const test = arg.testdatabase
+    ? await stapTestdatabase(arg, d, v, { policyIds, gewenstAuth, maskeer, stap })
+    : null;
+  if (test) resultaat.testdatabase = { project_ref: test.ref, anon_key: test.inGit };
 
   // 3.5 de deur; in de tijdelijke stand is er geen hostname en is stap 4 de deur
   let deur = v.deur;
@@ -580,9 +706,13 @@ export async function richtIn(arg, d) {
       deurApp({ naam: v.namen.deur, hostname: v.hostname, policyIds, idps: v.idps }),
     );
     stap("3.5 Access-app op de hostname", `aangemaakt (${deur.id})`);
-  } else if (JSON.stringify(policyIdsVanApp(deur)) !== JSON.stringify(policyIds)) {
-    await cf.werkAppBij(deur.id, metPolicies(deur, policyIds));
-    stap("3.5 Access-app op de hostname", `hergebruikt, policies bijgewerkt (${deur.id})`);
+  } else if (afwijkingen(deur, policyIds, v.idps).length) {
+    const anders = afwijkingen(deur, policyIds, v.idps);
+    await cf.werkAppBij(deur.id, metGewenst(deur, policyIds, v.idps));
+    stap(
+      "3.5 Access-app op de hostname",
+      `hergebruikt, ${anders.join(" en ")} bijgewerkt (${deur.id})`,
+    );
   } else stap("3.5 Access-app op de hostname", `hergebruikt (${deur.id})`);
 
   // 4 Access op de Worker, vóór 3.6: pas met de GitHub-variabelen kan er uitgerold
@@ -615,10 +745,11 @@ export async function richtIn(arg, d) {
       // Sentry staat alleen aan als de beheeromgeving een DSN heeft; anders niets.
       ...(d.sentryDsn ? { VITE_SENTRY_DSN: d.sentryDsn } : {}),
     },
-    // De preview draait op hetzelfde project; een eigen database gebruikt schema public.
+    // De preview draait op de testdatabase als die er is, anders op hetzelfde project.
+    // Een eigen database gebruikt schema public.
     repoVariabelen: {
-      PREVIEW_VITE_SUPABASE_URL: supabaseUrl(project.ref),
-      PREVIEW_VITE_SUPABASE_ANON_KEY: sleutels.anon,
+      PREVIEW_VITE_SUPABASE_URL: supabaseUrl(test?.ref ?? project.ref),
+      PREVIEW_VITE_SUPABASE_ANON_KEY: test?.anon ?? sleutels.anon,
       PREVIEW_VITE_SUPABASE_SCHEMA: "public",
       PREVIEW_VITE_INLOGDIENST: "cloudflare",
       ...(d.sentryDsn ? { PREVIEW_VITE_SENTRY_DSN: d.sentryDsn } : {}),
@@ -738,8 +869,15 @@ export async function ruimOp(arg, d) {
   const { cf, supabase } = d;
   const appsUitBestand = arg.app ? [arg.app] : Object.keys(d.toegang?.apps ?? {});
   const namen = appsUitBestand.map((app) => appNamen(app, vv));
-  const appNamenSet = new Set(namen.flatMap((n) => [n.deur, n.inlog, n.worker]));
-  const projectNamen = new Set(namen.map((n) => n.project));
+  // De testdatabase hoort bij de app, behalve als er echt een app <app>-test bestaat:
+  // dan is die naam van die app en blijft hij buiten een opruiming van alleen <app>.
+  const eigenTest = (app) => !d.toegang?.apps?.[`${app}-test`] || !arg.app;
+  const testNamen = appsUitBestand.filter(eigenTest).map((app) => appNamen(app, vv));
+  const appNamenSet = new Set([
+    ...namen.flatMap((n) => [n.deur, n.inlog, n.worker]),
+    ...testNamen.map((n) => n.testInlog),
+  ]);
+  const projectNamen = new Set([...namen.map((n) => n.project), ...testNamen.map((n) => n.test)]);
   const policyNamen = new Set(Object.keys(d.toegang?.groepen ?? {}).map((g) => policyNaam(g, vv)));
 
   const alleApps = await cf.apps();
@@ -847,6 +985,27 @@ async function vangnetAan(d, ref, voorvoegsel) {
   );
 }
 
+/** Ban en afmelden in één Supabase-project voor wie niet (meer) bij de app mag. */
+async function trekInOp(d, t, app, ref) {
+  const sleutels = await d.supabase.sleutels(ref);
+  d.maskeer?.(sleutels.serviceRole);
+  const admin = (d.maakAdmin ?? standaardAdmin)(supabaseUrl(ref), sleutels.serviceRole);
+  return trekIn({
+    gebruikers: await alleGebruikers(admin),
+    toegang: t,
+    app,
+    ban: async (id) => {
+      const { error } = await admin.updateUserById(id, { ban_duration: BAN_DUUR });
+      if (error) throw new Error(`Supabase updateUserById: ${error.message ?? error}`);
+    },
+    afmelden: (id) => d.supabase.voerSqlUit(ref, afmeldSql(id)),
+    ontban: async (id) => {
+      const { error } = await admin.updateUserById(id, { ban_duration: GEEN_BAN });
+      if (error) throw new Error(`Supabase updateUserById: ${error.message ?? error}`);
+    },
+  });
+}
+
 /**
  * Maakt Cloudflare gelijk aan toegang.json en trekt daarna de toegang in van wie niet
  * meer past: ban en afmelden in het Supabase-project van elke app.
@@ -860,6 +1019,7 @@ export async function werkToegangBij(arg, d) {
   const projecten = await supabase.projecten();
   const doelApps = (arg.app ? [arg.app] : Object.keys(t.apps)).filter((app) => t.apps[app]);
   const projectVan = (app) => projecten.find((p) => p.name === appNamen(app, vv).project);
+  const testProjectVan = (app) => projecten.find((p) => p.name === appNamen(app, vv).test);
   if (arg.droogloop) {
     gewenstePolicies(t, { groepenIdp: d.groepenIdp, voorvoegsel: vv });
     const conflicten = kaleNaamConflicten(t, policies, vv);
@@ -897,26 +1057,18 @@ export async function werkToegangBij(arg, d) {
       await supabase.voerSqlUit(project.ref, vangnetSql(t, app, functie));
       hooks.push(`aanmeld-hook public.${functie} van ${app} bijgewerkt`);
     }
-    const sleutels = await supabase.sleutels(project.ref);
-    d.maskeer?.(sleutels.serviceRole);
-    const admin = (d.maakAdmin ?? standaardAdmin)(supabaseUrl(project.ref), sleutels.serviceRole);
-    const r = await trekIn({
-      gebruikers: await alleGebruikers(admin),
-      toegang: t,
-      app,
-      ban: async (id) => {
-        const { error } = await admin.updateUserById(id, { ban_duration: BAN_DUUR });
-        if (error) throw new Error(`Supabase updateUserById: ${error.message ?? error}`);
-      },
-      afmelden: (id) => supabase.voerSqlUit(project.ref, afmeldSql(id)),
-      ontban: async (id) => {
-        const { error } = await admin.updateUserById(id, { ban_duration: GEEN_BAN });
-        if (error) throw new Error(`Supabase updateUserById: ${error.message ?? error}`);
-      },
-    });
-    if (r.ingetrokken.length) ingetrokken[app] = r.ingetrokken;
-    if (r.toegelaten.length) toegelaten[app] = r.toegelaten;
-    if (r.onbekend.length) onbekend[app] = r.onbekend;
+    // Ook in de testdatabase: wie eruit is, komt ook in de previews niet meer binnen.
+    const doelen = [
+      [app, project],
+      [`${app} (test)`, testProjectVan(app)],
+    ];
+    for (const [sleutel, p] of doelen) {
+      if (!p) continue;
+      const r = await trekInOp(d, t, app, p.ref);
+      if (r.ingetrokken.length) ingetrokken[sleutel] = r.ingetrokken;
+      if (r.toegelaten.length) toegelaten[sleutel] = r.toegelaten;
+      if (r.onbekend.length) onbekend[sleutel] = r.onbekend;
+    }
   }
   // Pas na het intrekken: een policy die nog aan een app hangt, weigert Cloudflare te
   // verwijderen, en dat mag het intrekken van toegang nooit tegenhouden.

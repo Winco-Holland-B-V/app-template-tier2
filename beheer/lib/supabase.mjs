@@ -117,7 +117,12 @@ export function supabaseBeheer({ fetchFn = fetch, token, orgSlug, slaap = wacht 
         `Supabase-project ${ref} is na tien minuten nog niet gezond; kijk in het Supabase-dashboard`,
       );
     },
-    /** De anon key (publiek, voor de browser) en de service role (alleen hier, nooit in de app). */
+    /**
+     * De anon key (publiek, voor de browser), de service role (alleen hier, nooit in de
+     * app) en, als het project die heeft, de publishable key (sb_publishable_...). Die
+     * laatste is ook publiek, maar ziet er niet uit als een JWT; guard:secrets laat
+     * hem daarom in git staan (stack.config.json), de anon-JWT niet.
+     */
     async sleutels(ref) {
       const lijst = (await s(`/projects/${ref}/api-keys?reveal=true`)) ?? [];
       const anon =
@@ -127,7 +132,8 @@ export function supabaseBeheer({ fetchFn = fetch, token, orgSlug, slaap = wacht 
       if (!anon?.api_key || !service?.api_key) {
         throw new Error(`de sleutels van Supabase-project ${ref} zijn niet volledig op te halen`);
       }
-      return { anon: anon.api_key, serviceRole: service.api_key };
+      const publishable = lijst.find((k) => k.type === "publishable")?.api_key ?? null;
+      return { anon: anon.api_key, serviceRole: service.api_key, publishable };
     },
     /**
      * Het adres van de session pooler (IPv4). De directe databasehost is alleen via IPv6
@@ -139,6 +145,9 @@ export function supabaseBeheer({ fetchFn = fetch, token, orgSlug, slaap = wacht 
       const primair = lijst.find((p) => p.database_type === "PRIMARY") ?? lijst[0];
       return typeof primair?.db_host === "string" && primair.db_host ? primair.db_host : null;
     },
+    /** Een nieuw databasewachtwoord; het oude werkt daarna niet meer. */
+    zetDatabaseWachtwoord: (ref, wachtwoord) =>
+      s(`/projects/${ref}/database/password`, { methode: "PATCH", body: { password: wachtwoord } }),
     authConfig: (ref) => s(`/projects/${ref}/config/auth`),
     werkAuthBij: (ref, velden) =>
       s(`/projects/${ref}/config/auth`, { methode: "PATCH", body: velden }),

@@ -242,7 +242,7 @@ export async function koppelPolicies(cf, toegang, apps, ids, voorvoegsel) {
   for (const app of Object.keys(toegang.apps)) {
     const gewenst = policyIdsVoorApp(toegang, app, ids);
     const namen = appNamen(app, voorvoegsel);
-    for (const naam of [namen.deur, namen.inlog, namen.worker]) {
+    for (const naam of [namen.deur, namen.inlog, namen.testInlog, namen.worker]) {
       const er = apps.find((a) => a.name === naam);
       if (!er) continue;
       if (JSON.stringify(policyIdsVanApp(er)) === JSON.stringify(gewenst)) continue;

@@ -195,6 +195,7 @@ export function nepWolk({
         return antwoord(200, [
           { name: "anon", type: "legacy", api_key: `anon-${m[1]}` },
           { name: "service_role", type: "legacy", api_key: `geheim-sr-${m[1]}` },
+          { name: "default", type: "publishable", api_key: `sb_publishable_${m[1]}` },
         ]);
       }
       if (pas(/^\/projects\/([^/]+)\/config\/database\/pooler$/) && methode === "GET") {
@@ -210,6 +211,11 @@ export function nepWolk({
           staat.auth[m[1]] = { ...staat.auth[m[1]], ...body };
           return antwoord(200, staat.auth[m[1]]);
         }
+      }
+      if (pas(/^\/projects\/([^/]+)\/database\/password$/) && methode === "PATCH") {
+        if (!staat.projecten.some((p) => p.ref === m[1]))
+          return antwoord(404, { message: "project bestaat niet" });
+        return antwoord(200, { message: "ok" });
       }
       if (pas(/^\/projects\/([^/]+)\/database\/query$/) && methode === "POST") {
         staat.sql.push(body.query);

@@ -58,6 +58,10 @@ export function appNamen(app, voorvoegsel) {
     inlog: `${vv}${app}-inlog`,
     worker: `${vv}${app}-worker`,
     project: `${vv}${app}`,
+    // De testdatabase: een tweede Supabase-project met een eigen inlog-app, zodat de
+    // previews nooit bij productie kunnen.
+    test: `${vv}${app}-test`,
+    testInlog: `${vv}${app}-test-inlog`,
   };
 }
 
@@ -215,6 +219,29 @@ export function metPolicies(app, policyIds) {
 
 export function policyIdsVanApp(app) {
   return (app?.policies ?? []).map((p) => (typeof p === "string" ? p : p.id));
+}
+
+/**
+ * Wat er bij een bestaande app anders is dan gewenst: "policies" en/of "inlogmethoden"
+ * (allowed_idps en auto_redirect_to_identity). Leeg betekent niets bijwerken.
+ */
+export function afwijkingen(app, policyIds, idps) {
+  const uit = [];
+  if (JSON.stringify(policyIdsVanApp(app)) !== JSON.stringify(policyIds)) uit.push("policies");
+  const gewenst = inlogmethoden(idps);
+  const huidig = [...(app?.allowed_idps ?? [])].sort();
+  if (
+    JSON.stringify(huidig) !== JSON.stringify([...gewenst.allowed_idps].sort()) ||
+    Boolean(app?.auto_redirect_to_identity) !== gewenst.auto_redirect_to_identity
+  ) {
+    uit.push("inlogmethoden");
+  }
+  return uit;
+}
+
+/** De body voor een bestaande app met de gewenste policies én inlogmethoden. */
+export function metGewenst(app, policyIds, idps) {
+  return { ...metPolicies(app, policyIds), ...inlogmethoden(idps) };
 }
 
 /**

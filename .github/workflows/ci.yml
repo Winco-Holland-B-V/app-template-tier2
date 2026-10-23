@@ -7,8 +7,9 @@ on:
     # Zonder `edited` zou je die regel kunnen toevoegen zonder dat er iets opnieuw
     # draait, en bleef de check rood tot je een lege commit pushte.
     types: [opened, synchronize, reopened, edited]
-  push:
-    branches: [main]
+  # Geen run meer na een merge op `main`: de ruleset eist dat de branch bij is met main,
+  # dus de PR-run heeft precies deze code al getest. Een tweede run kostte bij Richplant
+  # een kwart van de Actions-minuten (oktober 2026). Uitrollen heeft zijn eigen workflow.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -129,9 +130,13 @@ jobs:
               ;;
           esac
 
+      # Zonder de onderdelen die geen test gebruikt: Studio (beheerscherm), imgproxy
+      # (beeldbewerking), logflare en vector (logging) en supavisor (pooler). Scheelt per
+      # run downloadtijd en Actions-minuten, en minder kans op de downloadlimiet van Docker Hub.
+      # Lokaal start `pnpm db:start` gewoon alles, Studio inbegrepen.
       - name: Supabase starten (draait meteen alle migraties)
         if: steps.stack.outputs.modus == 'eigen'
-        run: pnpm exec supabase start
+        run: pnpm exec supabase start -x studio,imgproxy,logflare,vector,supavisor
 
       - name: Omgevingsvariabelen schrijven
         if: steps.stack.outputs.modus == 'eigen'

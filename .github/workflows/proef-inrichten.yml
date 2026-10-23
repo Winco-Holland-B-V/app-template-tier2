@@ -40,7 +40,9 @@ permissions:
 jobs:
   inrichten:
     name: Inrichten
-    if: github.ref == 'refs/heads/main'
+    # Alleen in de template zelf: een app uit de template krijgt deze workflow bij de
+    # Initial commit nog even mee, en zou anders een lege omgeving proef-beheer aanmaken.
+    if: github.repository == 'Stage-Two-AI/stack-template-cloudflare' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: proef-beheer
     steps:
